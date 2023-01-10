@@ -1,0 +1,1298 @@
+---
+title: "Essentials for Normal Error Linear Regression Model"
+author: "Denis Ostroushko"
+date: "`r Sys.Date()`"
+output: 
+   bookdown::pdf_document2: default
+---
+
+<!-- 
+File 3 contains data descriptions
+
+editor_options: 
+  markdown: 
+    wrap: 72
+
+trying out new github linkage
+--> 
+
+```{r, echo = F}
+knitr::opts_chunk$set(echo = F, message = F, warning = F, fig.height=4, fig.width=7, fig.align='center')
+options(scipen=999)
+```
+
+```{r some fucntion to be reused in analysis}
+
+pretty_cable <- 
+  function(table, 
+           column_names){
+    
+    return_table <- 
+      table %>% 
+      kbl(booktabs = T, 
+          col.names = column_names, 
+          caption = "")  %>% 
+      kable_styling(latex_options = c("striped", 'condenced', "HOLD_position"), 
+                    full_width = F, 
+                    font_size = 10)
+    
+    return(return_table)
+  }
+
+```
+
+\newpage 
+
+# Introduction
+
+This document is intended as a, hopefully, detailed guide to regression analysis in R. In particular, I present a 
+step by step guide to develop a Normal Error Regression Model  (NERM). Other people may call it a Gaussian regression 
+model, a multiple regression model, or any other number of names.
+I intend to include as munch theory and intuition as possible in each section. There are three main reason to do so 
+for me 
+
+1. This document will serve as study guide for me. I took a regression based course three times by now, twice as 
+an undergraduate student in Fall 2016 and Spring 2019 at the University of Minnesota Morris campus, 
+and once in Fall 2022 as a graduate student at the University of Minnesota Twin Cities campus. Here, I combine 
+all accumulated methods and knowledge I collected over the years. There are certain methods I always have to look up,
+or google when I work with regression models, and hopefully a guide written by me for me can be the best reference. 
+
+2. As a guide, I intend to use this file when I prepare for my preliminary exam in May of 2023, after I finish the 
+first year of the MS program. 
+
+3. While writing this guide I push myself to use `git` as much as possible, something I intended to do for a while. 
+
+Please refer to a table of context to find of topic of interest. Each section should have the following parts: 
+
+*   If an R package is used, I introduce the package and document functions that I used. 
+    Will follow an informal format
+
+*   An intuitive explanation of the method, and a formal one, if it is applicable. The level of rigor is at the level 
+    of an MS - level regression course. NAME A BOOK THAT IS USED 
+
+*   An application of the method with comments 
+
+```{r}
+library(MASS)
+require(tidyverse) # require instead of library to make sure that other packages do not overwrite tidyverse packages 
+library(kableExtra)
+library(readxl)
+library(gridExtra)
+library(ggeffects)
+library(olsrr) # a better package for stepwise regression 
+library(car)
+library(broom) # For converting models into data frame
+library(caret)
+library(ggcorrplot) # for a pretty correlation plot 
+library(emmeans)
+```
+
+# Exploratory Analysis 
+
+```{r}
+df <- readxl::read_xls("/Users/denisostroushko/Desktop/UofM MS/MS Fall 2022/Puhb 7405/Data Sets/Cigarettes.xls")
+
+#make column names to lower case to simplify coding 
+colnames(df) <- sub(" ", "_", tolower(colnames(df)))
+
+```
+
+I obtained this data set as a part of PUBH 7405 Course. We used this data set for a few homework assignments. A full summary of the data set is given in Table \@ref(tab:data-set-summary). 
+This data set contains `r nrow(df)` observations, which is a perfect size for an example. 
+
+```{r data-set-summary}
+l_u <- function(x){length(unique(x))}
+
+data_descr <- 
+  data.frame(
+    names = colnames(df), 
+    descr = c(
+      "Age of a patient", 
+      "Gender of a Patient: 1 = female, 2 = male", 
+      "Cigarettes Per Day consumed", 
+      "Carbon Monoxide measurement", 
+      "A derivative of Nicotine", 
+      "a derivative of NNN, a toxin only comes from tobacco products"
+    ), 
+    type = sapply(df, class), 
+    N = sapply(df, l_u)
+    
+  )
+
+rownames(data_descr) <- NULL
+
+pretty_cable(
+  data_descr, 
+  column_names = c("Variable", "Description", "Variable Type", "Unique Values")
+)
+
+```
+
+## Analysis statement 
+
+For the purpose of this exercise we will use NNAL measurements as a response variable and 
+all other variables as potential predictors. Through this exercise we will evaluate all of this variables 
+for their predictive power, change their scale, consider higher order powers (non-linear curves), and 
+might throw away some predictors due to low predictive power. 
+
+## Univariate Analysis: Distributions
+
+It is important to assess the shape of the distribution of predictors. There are many implications that we need to consider: 
+
+1. The distribution shape matters. Of course, in the regression context, the relationship with the response variable is far more important. However, having
+    a distribution with a heavy tail, clusters of variables, extended tail(s), etc. Many extreme values and outliers gives you data might not fit the 
+    linear regression model well. 
+  
+2. The range of values that are available to us matters. When we compute the standard errors for the regression coefficients, a part of the formula includes $\large \Sigma (X_i - \bar X)^2$
+    in the denominator. Therefore, a high range of observations of a predictor $X_i$ around its mean will result in a larger value of the summation term. This will make the standard error 
+    smaller. 
+    
+3. We need to know the range of predictors when we try to make predictions using a developed regression model. Stepping outside of these ranges for each selected predictor constitutes 
+    extrapolation. The further we go outside of the scope that we used for model development, the more we extrapolate. 
+  
+  We will also see that making predictions using values of $X_i$ further away from means of each $X_i$ results in higher prediction error. 
+  
+**Response variable - NNAL - distribution** 
+
+```{r}
+
+os <- 
+  ggplot(data = df, 
+       aes(x = nnal)) + geom_histogram(fill = "white", color = "black", binwidth = 1) + 
+  geom_vline(aes(xintercept = mean(df$nnal), color = "Mean"), size = 1) + 
+  geom_vline(aes(xintercept = median(df$nnal), color = "Median"), size = 1) + 
+  theme_minimal() + 
+  ggtitle(
+    paste("Distribtuion of NNAL On the original scale. \n Mean: ", round(mean(df$nnal), 2), 
+          "; Median: ", round(median(df$nnal,2))
+          )
+  ) + 
+  theme(legend.position = "none", 
+        plot.title = element_text(size = 10)) 
+
+  
+ls <- 
+  ggplot(data = df, 
+       aes(x = log(nnal))) + geom_histogram(fill = "white", color = "black", binwidth = 0.5) + 
+  geom_vline(aes(xintercept = mean(log(df$nnal)), color = "Mean"), size = 1) + 
+  geom_vline(aes(xintercept = median(log(df$nnal)), color = "Median"), size = 1) + 
+  theme_minimal() + 
+  ggtitle(
+    paste("Distribtuion of NNAL On the logarithmic scale. \n Mean: ", round(mean(log(df$nnal)), 2), 
+          "; Median: ", round(median(log(df$nnal,2)))
+          )
+  ) + 
+  labs(colour = "Statistic") + 
+  theme(plot.title = element_text(size = 10))
+  
+grid.arrange(os, ls, nrow = 1)
+```
+
+Cotinine follows similar but less extreme distribution
+
+**Predictor - CPD**
+
+We consider CPD (Cigarettes per Day) as a predictor. Looking for outliers is one of the reasons we want
+to visually assess the data. As we can see on Figure \@ref(fig:cpd) there are some extreme outliers in the
+data. These values  can be potentially influential on the model fit, coefficients, and other
+metrics/parameters we are estimating. We will keep the presence of this outlier in mind, and return to a
+statistical/informal evaluation in the later sections. 
+
+```{r cpd, fig.cap="Distribution of CPD"}
+ggplot(data = df, 
+       aes(x = cpd)) + geom_histogram(fill = "white", color = "black", binwidth = 5) + 
+  geom_vline(aes(xintercept = mean(df$cpd), color = "Mean"), size = 1) + 
+  geom_vline(aes(xintercept = median(df$cpd), color = "Median"), size = 1) + 
+  theme_minimal() + 
+  
+  ggtitle(
+    paste("Distribtuion of CPD. Mean: ", round(mean(df$cpd), 2), 
+          "; Median: ", round(median(df$cpd),2)
+          )
+  ) + 
+  labs(colour = "Statistic") 
+```
+
+## Relationship Type 
+
+**Cotinine - NNAL**
+
+Poor fit, many outliers
+
+```{r}
+
+ggplot(data = df, 
+       aes(x = cotinine, 
+           y = nnal)) + 
+  geom_point() + 
+  geom_smooth(se = F, aes(color = "LOESS Smooth")) + 
+  geom_smooth(se = T,method = "lm",  aes(color = "Regression")) + 
+  theme_minimal() + 
+  labs(colour = "Line Type") + 
+  
+  ggtitle(
+    paste("Relationship between Cotinine and NNAL on the origignal scales. \n Pearson's Correlation: ", 
+    round(cor(df$nnal, df$cotinine), 5)) 
+  ) + 
+
+  theme(plot.title = element_text(size = 12)) + 
+  
+  xlab("Cotinine") + 
+  ylab("NNAL")
+
+```
+
+Better fit, higher correlation, perhaps, better use quadratic function here. Investigate
+
+```{r}
+
+ggplot(data = df, 
+       aes(x = log(cotinine), 
+           y = log(nnal))) + 
+  geom_point() + 
+  geom_smooth(se = F, aes(color = "LOESS Smooth")) + 
+  geom_smooth(se = T,method = "lm",  aes(color = "Regression")) + 
+  theme_minimal() + 
+  labs(colour = "Line Type") + 
+  
+  ggtitle(
+    paste("Relationship between Cotinine and NNAL on the logarithmic scales. \n Pearson's Correlation: ", 
+    round(cor(log(df$nnal), log(df$cotinine)), 5)) 
+  ) + 
+
+  theme(plot.title = element_text(size = 12)) + 
+  
+  xlab("Cotinine") + 
+  ylab("NNAL")
+
+```
+
+
+**age - log NNAL**
+
+```{r}
+
+ggplot(data = df, 
+       aes(x = age, 
+           y = log(nnal))) + 
+  geom_point() + 
+  geom_smooth(se = F, aes(color = "LOESS Smooth")) + 
+  geom_smooth(se = T,method = "lm",  aes(color = "Regression")) + 
+  theme_minimal() + 
+  labs(colour = "Line Type") + 
+  
+  ggtitle(
+    paste("Relationship between Age and NNAL on the origignal scales. \n Pearson's Correlation: ", 
+    round(cor(log(df$nnal), df$age), 5)) 
+  ) + 
+
+  theme(plot.title = element_text(size = 12)) + 
+  
+  xlab("Age") + 
+  ylab("NNAL")
+
+```
+
+Since age is a useless predictor, dichotomize it into 10 buckets, we will need it for an example of a concept later. 
+
+```{r}
+df$age_buckets <- factor(cut(df$age, 
+                      breaks = c(
+                        -Inf,
+                        quantile(df$age, 0.1),
+                        quantile(df$age, 0.2),
+                        quantile(df$age, 0.3), 
+                        quantile(df$age, 0.4), 
+                        quantile(df$age, 0.5), 
+                        quantile(df$age, 0.6), 
+                        quantile(df$age, 0.7), 
+                        quantile(df$age, 0.8), 
+                        quantile(df$age, 0.9), 
+                        Inf
+                      )))
+
+```
+
+**gender - log NNAL**
+
+```{r}
+ggplot(data = df, 
+       aes(x = case_when(
+            gender == 1 ~ 'F', 
+            T ~ 'M')
+           , y = log(nnal))) + 
+  
+  geom_boxplot() + 
+  geom_jitter() + 
+  theme_minimal() + 
+  
+  xlab("Gender") + 
+  ylab("NNAL") + 
+  ggtitle("Distribution of NNAL Measuments on the \n Logaithmic Scale within Gender Groups")
+```
+
+
+## Higher Order Terms Implications
+
+When we include a higher order term in a model our equation becomes: 
+
+$$\Large E[Y_i] = \dots + \hat \beta_i * X_i + \hat \beta_{i+1} * X_i^2 + \dots$$
+
+So, we have introduced a high degree of correlation between the two predictors now, which should increase the standard error of the $\hat \beta_k$ estimates. 
+Thus, we consider a linear transformation of $X_i$, called centering. For example, in our problem we want to consider cotinine levels as a predictor, and we concluded that 
+we might want to use a higher order term for this variable. 
+
+```{r}
+
+no_c <- 
+  ggplot(data = df, 
+         aes(x = log(cotinine), 
+             y = log(cotinine)^2)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = T, color = "red") + 
+  
+  xlab("Linear Term") + 
+  ylab("Squared Term") + 
+  theme_minimal() + 
+  
+  ggtitle(paste("Relationship between non-centered terms. \n Correlation: ", round(cor(log(df$cotinine), log(df$cotinine)^2 ), 4) )) + 
+  theme(plot.title = element_text(size = 12))
+
+c <- 
+  ggplot(data = df, 
+         aes(x = log(cotinine) - mean(log(cotinine)), 
+             y = (log(cotinine) - mean(log(cotinine)))^2)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = T, color = "red") + 
+  
+  xlab("Linear Term") + 
+  ylab("Squared Term") + 
+  theme_minimal() + 
+  
+  ggtitle(
+    paste("Relationship between centered terms. \n Correlation: ", 
+                round(cor(
+                  log(df$cotinine) - mean(log(df$cotinine)), 
+                  (log(df$cotinine) - mean(log(df$cotinine)))^2), 4) )
+    )+ 
+  theme(plot.title = element_text(size = 12))
+
+grid.arrange(no_c, c, nrow = 1)
+
+```
+
+So, we consider the following steps: 
+
+1. Perform a scale transformation: we use a natural logarithm in our case. Also may consider square root, other log bases, etc.. 
+2. Perform centering by subtracting the mean
+3. Now we can include a squared term to the linear equation without multicollinearity implications
+
+Note that in our case collinearity was not reduced drastically. Location of the mean affects this phenomena. More central mean location forces a more balanced distribution of 
+negative and positive values of a centered variable. When we have a distribution that is skewed towards one of the signs (positive or negative), the effect of centering on correlation 
+reduces. More skewed distribution implies lesser effect of centering on correlation between the two terms. 
+
+In the process of evaluating the model we will consider a number of configurations of scales and centering. 
+
+## Correlation
+
+### Multicollinearility Issue 
+
+1. Inflates Standard Errors 
+2. Effect of correlated variables is split between the two variables
+3. Effects that are split are not a unique solution 
+
+### Types of Correlation Metrics
+
+```{r}
+
+df_2 <- df %>% 
+  mutate(
+    log_nnal = log(nnal), 
+    log_cotinine = log(cotinine)
+  ) %>% 
+  
+  select(age, gender, cpd, carbon_monoxide, log_cotinine, log_nnal, age_buckets)
+```
+
+```{r}
+ggcorrplot(cor(df_2 %>% select(-age_buckets)), hc.order = TRUE, 
+           type = "upper",
+           outline.col = "white", 
+           lab = TRUE) + 
+  ggtitle("Pearson's Correlation")
+```
+
+```{r}
+ggcorrplot(cor(df_2  %>% select(-age_buckets), method = "spearman"), 
+           hc.order = TRUE, 
+           type = "upper",
+           outline.col = "white", 
+           lab = TRUE) + 
+  ggtitle("Spearman Correaltion")
+
+
+```
+
+# Model Selection
+
+say how many possible we have 
+
+## Metric Driven Approach 
+
+```{r}
+
+lm <- lm(log_nnal ~ age_buckets + gender + cpd * carbon_monoxide + log_cotinine + I(log_cotinine^2) , data = df_2)
+
+k <- ols_step_best_subset(lm)
+
+k %>% dplyr::select(n, predictors) %>% 
+  kbl(booktabs = T, 
+      caption = "Best Candidate Models") %>% 
+  kable_styling(latex_options = c("striped", "HOLD_position"))
+```
+
+```{r, echo = F}
+g1 <- 
+  ggplot(data = k, 
+         aes(x = n, y = adjr)) + geom_point(size = 1) + 
+    geom_line(color = "blue") + 
+    theme_minimal() + 
+  xlab("Model Index") + 
+  ylab("Adjusted R-square") +
+  ggtitle("Adjusted R-square for \n Candidate Models")
+g2 <- 
+  ggplot(data = k, 
+         aes(x = n, y = aic)) + geom_point(size = 1) + 
+    geom_line(color = "blue")+ 
+    theme_minimal() + 
+  xlab("Model Index") + 
+  ylab("AIC") +
+  ggtitle("AIC for Candidate Models")
+
+grid.arrange(g1, g2, nrow = 1)
+```
+
+### R-squared and Adjusted R-squared
+
+### AIC
+
+
+## Regression Trees
+
+```{r}
+tree <- rpart::rpart(log_nnal ~ gender + cpd + carbon_monoxide + log_cotinine + I(log_cotinine^2) , data = df_2)
+rpart.plot::rpart.plot(tree)
+
+tree <- rpart::rpart(log_nnal ~ gender + cpd + carbon_monoxide , data = df_2)
+rpart.plot::rpart.plot(tree)
+```
+
+# Model Evaluation
+
+## Overall F Test 
+
+explain 
+
+```{r}
+empty <- lm(log_nnal ~ 1, data = df_2)
+
+anova(empty, lm)
+
+```
+
+## Single Predictor T Test 
+
+```{r}
+res_reg <- data.frame(summary(lm)$coefficients)
+res_reg$var <- rownames(res_reg)
+rownames(res_reg) <- NULL
+res_reg <- res_reg %>% select(var, everything())
+res_reg <-
+  res_reg %>% mutate_at(vars(Estimate, `Std..Error`, t.value, `Pr...t..`),
+                                 funs(round(., 6)
+                                      )
+                                 )
+
+colnames(res_reg) <- c("Predictor", "Estiamte", "Standard Error", "Z Value", "P value")
+
+res_reg$`Significant` <- ifelse(res_reg$`P value` < 0.05, "*", "")
+
+res_reg %>%
+  kbl(booktabs = T, align = c('l','c', 'c', 'c', 'c'),
+      linesep = "\\addlinespace", ) %>%
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+    column_spec(length(res_reg), width = "1.75cm")
+
+res_reg <- res_reg %>% select(-`Significant`)
+
+```
+
+formula for probability of at least one false positive 
+
+compare single predictor t test with drop one approach F test 
+
+### Why adjust 
+```{r}
+ggplot2::ggplot(data = data.frame(x = seq(1,100,1), y = (1-.95^seq(1,100,1))), aes(x,y)) + geom_point() 
+```
+
+### Bonferroni Adjustments 
+
+Explain how we calculate the number of predictors with the dictomized variable 
+
+```{r}
+
+n_predictors <- nrow(res_reg) - 1 - 1
+
+sum_bonf_adj <- res_reg %>% select(`Predictor`, `P value`)
+sum_bonf_adj$`Significant at Adj. Level` = 
+  with(sum_bonf_adj, 
+       ifelse(`P value` < 0.05 / n_predictors , "*", "")
+       )
+sum_bonf_adj %>% 
+  kbl( booktabs = T,
+       linesep = "\\addlinespace") %>% 
+    kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+    column_spec(3, width = "2cm")
+```
+
+### Hochberg Adjustments 
+
+```{r}
+round_3 <- function(x){round(x, 7)}
+
+hoch_data <- 
+  res_reg %>% select(`Predictor`, `P value`) %>% arrange(-`P value`) %>% 
+  filter(`Predictor` != "Intercept")
+hoch_data$`Comparison P-value` <- 0.05
+hoch_data$`Significant at Adj. Level` <- ""
+cur_adj_n <- 1
+for(i in 1:nrow(hoch_data)){
+  
+  cur_level <- 0.05 / cur_adj_n
+  hoch_data[i,3] <- cur_level
+ 
+  if(hoch_data[i,2] > cur_level){
+    cur_adj_n <- cur_adj_n + 1
+    
+    hoch_data[i,3] <- cur_level
+  }
+}
+hoch_data[,4] <- ifelse(hoch_data[,2] < hoch_data[,3], "*", "")
+hoch_data[,2:3] <- lapply(hoch_data[,2:3], round_3)
+hoch_data %>% 
+  kbl( booktabs = T,
+       linesep = "\\addlinespace") %>% 
+    kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+    column_spec(c(3,4),  width = "2cm")
+```
+
+### Holm Adjustments 
+
+```{r}
+holm_data <- 
+  res_reg %>% select(`Predictor`, `P value`) %>% arrange(`P value`) %>% 
+  filter(`Predictor` != "Intercept")
+  
+holm_data$`Comparison P-value` <- 1
+holm_data$`Significant at Adj. Level` <- ""
+cur_adj_n <- n_predictors
+for(i in 1:nrow(holm_data)){
+  
+  cur_level <- 0.05 / cur_adj_n
+  holm_data[i,3] <- cur_level
+  
+  if(holm_data[i,2] <= cur_level ){
+    cur_adj_n <- cur_adj_n - 1
+    holm_data[i,3] <- cur_level
+    holm_data[i,4] <- "*"
+  }
+}
+holm_data[,2:3] <- lapply(holm_data[,2:3], round_3)
+holm_data %>% 
+  kbl( booktabs = T,
+       linesep = "\\addlinespace") %>% 
+    kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+    column_spec(c(3,4), width = "2cm")
+```
+
+## Multiple Predictors F Test 
+
+```{r}
+lm_reduced <- lm(log_nnal ~ age_buckets +  log_cotinine + I(log_cotinine^2), data = df_2)
+anova(lm_reduced, lm)
+
+lm_reduced_no_sq <- lm(log_nnal ~ age_buckets + log_cotinine, data = df_2)
+anova(lm_reduced_no_sq, lm_reduced)
+
+lm_reduced_no_age <- lm(log_nnal ~ log_cotinine + I(log_cotinine^2), data = df_2)
+anova(lm_reduced_no_age, lm_reduced)
+
+```
+
+## Extra Sum of Squares
+
+## Type I Sum of Squares
+
+Sequential Sum of Squares 
+
+```{r}
+
+lm <- lm(log_nnal ~ age_buckets + gender + cpd + carbon_monoxide + log_cotinine + I(log_cotinine^2) , data = df_2)
+anova(lm)
+
+lm <- lm(log_nnal ~ log_cotinine + I(log_cotinine^2) + age_buckets + gender + cpd + carbon_monoxide , data = df_2)
+anova(lm)
+```
+
+
+## Type II Sum of Squares
+
+
+### Partial R-squared 
+
+page 269 
+
+```{r}
+Anova(lm, type = "2")
+```
+
+## Type III Sum of Squares
+
+```{r}
+lm <- lm(log_nnal ~ log_cotinine + I(log_cotinine^2) + age_buckets + gender + cpd * carbon_monoxide , data = df_2)
+Anova(lm, type = "3")
+```
+
+```{r}
+lm <- lm(formula = log_nnal ~ gender + cpd + carbon_monoxide + 
+    log_cotinine + I(log_cotinine^2), data = df_2)
+```
+
+# Diagnostics 
+
+## Variable Related 
+
+### Assumtions to Verify
+  
+  Take from HW 3
+  
+  1. Constant  Variance 
+  
+  2. Independence of Predictors and Residuals 
+  
+  3. Normality of Residuals 
+  
+### Residual Plots 
+  
+```{r}
+ggplot(data = 
+         data.frame(
+           y = rstandard(lm), 
+           x = lm$fitted.values
+         ), 
+       aes(x = x, y = y)) + geom_point() + 
+  geom_smooth(method = "lm", se = T, color = "red") + 
+  geom_smooth(se = F, color = "blue")
+
+```
+
+```{r}
+
+cont_predictor_resid_plot <- 
+  function(pred){
+    
+    ggplot(data = 
+         data.frame(
+           y = rstandard(lm), 
+           x = pred
+         ), 
+       aes(x = x, y = y)) + geom_point() + 
+      
+      geom_smooth(method = "lm", se = T, color = "red") + 
+      geom_smooth(se = F, color = "blue") + 
+      ylab("Studentized Residual")
+  }
+
+cont_predictor_resid_plot(df_2$log_cotinine) + 
+  xlab("Log - Cotinine")
+
+```
+
+### Added Variable Plot
+
+```{r}
+Added_var_plot <- 
+  function(response, pred, data ){
+    
+    
+    f_y <- as.formula(
+      paste(
+        response, "~", 
+        paste(colnames(data %>% select(-pred, -response))
+          , collapse = "+")
+      )
+    )
+    
+    f_x <- as.formula(
+      paste(
+        pred, "~", 
+        paste(colnames(data %>% select(-pred, -response))
+          , collapse = "+")
+      )
+    )
+    
+    plot_d <- 
+      data.frame(
+        e_x = rstandard(lm(f_x, data = data)),
+        e_y = rstandard(lm(f_y, data = data))
+      )
+   
+     ggplot(data = plot_d, 
+       aes(x = e_x, y = e_y)) + geom_point() + 
+      
+      geom_smooth(method = "lm", se = T, color = "red") + 
+      geom_smooth(se = F, color = "blue") 
+  }
+
+Added_var_plot(
+  response = "log_nnal", 
+  pred = "log_cotinine", 
+  data = df_2
+)
+```
+  
+### Residual Normality 
+
+```{r}
+
+mse <- sum(lm$residuals^2)/lm$df.residual
+df_2$residuals <- lm$residuals
+df_2 <- df_2 %>% arrange(residuals)
+
+df_2$resid_rank <- as.numeric(rownames(df_2))
+N <- nrow(df_2)
+df_2$expected_resid <- sqrt(mse) * qnorm((df_2$resid_rank - .375)/(N + .25))
+corr <- cor(df_2$residuals, df_2$expected_resid)
+
+ggplot(data= df_2, 
+       aes(x = expected_resid, y = residuals)) + geom_point() + 
+  geom_smooth(method = "lm", color = "red") + 
+  ylab("Residuals") + 
+  xlab("Expected Residuals") + 
+  ggtitle(paste("Correlation between Observed and Expected", round(cor(df_2$residuals, df_2$expected_resid),3)))+ 
+  theme_minimal()
+
+```
+
+## Outliers - Observation Related
+
+### Deleted Studentized Residuals 
+
+Book page 395-396
+
+```{R}
+deleted_studentized <- 
+  ols_plot_resid_stud_fit(lm) 
+```
+
+### Cook's Distance 
+
+### Leverage Values from the Hat Matrix
+page 399
+
+```{r}
+H <- lm.influence(lm)$hat
+
+which(H > mean(H) * 2) 
+# explain why these values are extreme outliers 
+```
+
+### DFFITS
+ page 401
+ 
+```{r}
+ols_plot_dffits(lm, print_plot = TRUE)
+```
+
+### Cook's Distance 
+
+```{r}
+ols_plot_cooksd_chart(lm)
+```
+
+### DFBETAS
+
+```{r}
+
+ols_plot_dfbetas(lm, print_plot = TRUE)
+
+```
+
+## Informal Diagnostics
+
+### Coefficient Stability and Standard Error Inflation
+ 
+```{r}
+
+## important predictors go first
+
+coef_stability <- function(
+    DATA, 
+    RESPONSE, 
+    PREDICTOR_INTEREST, 
+    PREDICTORS_OTHER){
+  
+  master <- c(PREDICTOR_INTEREST, PREDICTORS_OTHER)
+  
+  return_res <- data.frame(
+    iter = numeric(), 
+    name = character(), 
+    coef = numeric(), 
+    se = numeric(), 
+    recent_added = character()
+  )
+  
+  for(i in 1:length(master)){
+    
+    data_iter <- DATA[c(RESPONSE, master[1:i])]
+      
+    iter_formula <- as.formula(
+      paste(RESPONSE, " ~ ", paste(master[1:i], collapse = " + "))
+    )
+    
+    lm_iter <- lm(iter_formula, data = data_iter)
+    
+    res_iter <- 
+      data.frame(
+        name = rownames(data.frame(summary(lm_iter)$coefficients)), 
+        coef  = summary(lm_iter)$coefficients[,1], 
+        se = summary(lm_iter)$coefficients[,2], 
+        iter = i, 
+        recent_added = master[i]
+      ) %>% filter(name == PREDICTOR_INTEREST)
+    
+    return_res <- rbind(
+      return_res, 
+      res_iter
+    )
+
+  }
+  
+  rownames(return_res) <- NULL
+  return_res <- na.omit(return_res)
+  return(return_res)
+  
+}
+
+coef_stab_df <- 
+  coef_stability(
+    DATA = df_2, 
+    RESPONSE = "log_nnal", 
+    PREDICTOR_INTEREST = 'carbon_monoxide', 
+    PREDICTORS_OTHER = c("log_cotinine", "cpd", "gender")
+)
+
+coef_stab_df2 <- 
+  coef_stability(
+    DATA = df_2, 
+    RESPONSE = "log_nnal", 
+    PREDICTOR_INTEREST = 'log_cotinine', 
+    PREDICTORS_OTHER = c("carbon_monoxide", "cpd", "gender")
+)
+
+```
+
+
+```{r}
+
+coef_stability_plot <- 
+  function(COEF_DF, TYPE ){
+    
+    type <- 
+      case_when(
+        TYPE == "se" ~ "Standard Error", 
+        TYPE == "coef" ~ "Coefficient"
+      )
+    
+    ggplot(data = COEF_DF, 
+           aes_string(
+             x = 'iter', 
+             y = TYPE)) + 
+      geom_point(size = 2, color = "blue") + 
+      geom_line(size = 1, color = "blue") + 
+      theme_minimal() + 
+      scale_x_continuous(breaks = COEF_DF$iter, labels = COEF_DF$recent_added) + 
+      
+      ggtitle(
+        paste("Stability of ", type, " for", unique(COEF_DF$name), 
+              '\n Changed ', 
+              round(COEF_DF[c(TYPE)][nrow(COEF_DF), ] / COEF_DF[c(TYPE)][1, ] - 1, 4) * 100, "% After the addition of all varibles"
+              )
+      ) + 
+      
+      theme(axis.text.x = element_text(angle = 45))
+    
+  }
+
+coef_stability_plot(
+  COEF_DF = coef_stab_df, 
+  TYPE = 'coef'
+)
+
+coef_stability_plot(
+  COEF_DF = coef_stab_df, 
+  TYPE = 'se'
+)
+
+coef_stability_plot(
+  COEF_DF = coef_stab_df2, 
+  TYPE = 'coef'
+)
+
+coef_stability_plot(
+  COEF_DF = coef_stab_df2, 
+  TYPE = 'se'
+)
+
+```
+
+### Variance Inflation Factor
+
+```{r}
+
+VIF_data <- 
+  function(DATA, 
+           RESPONSE, 
+           PREDICTORS, 
+           SPECIAL = ""){
+
+    if(SPECIAL == ""){
+        
+      f <- as.formula(
+        paste(RESPONSE, "~", paste(c(PREDICTORS), collapse = "+"))
+      )
+      
+      results <- 
+        data.frame(
+          predictor = paste(c(PREDICTORS)), 
+          se = summary(lm(f, data = df_2))$coefficient[-1, 2], 
+          R_sq = NA
+        )
+      
+        for(i in 1:length(c(PREDICTORS))){
+        
+        iter_f <- as.formula(
+                  paste(c(PREDICTORS)[i], "~", paste(c(PREDICTORS)[-i], collapse = "+"))
+                  )
+        
+        results$R_sq[i] <- summary(lm(iter_f, data = df_2))$r.squared
+    }
+    }
+    
+    if(SPECIAL != ""){
+      
+      f <- as.formula(
+        paste(RESPONSE, "~", paste(c(PREDICTORS, SPECIAL), collapse = "+")))
+  
+      results <- 
+        data.frame(
+          predictor = paste(c(PREDICTORS, SPECIAL)), 
+          se = summary(lm(f, data = df_2))$coefficient[-1, 2], 
+          R_sq = NA
+        )        
+      
+      for(i in 1:length(c(PREDICTORS, SPECIAL))){
+        
+        iter_f <- as.formula(
+                  paste(c(PREDICTORS, SPECIAL)[i], "~", paste(c(PREDICTORS, SPECIAL)[-i], collapse = "+"))
+                  )
+        
+        results$R_sq[i] <- summary(lm(iter_f, data = df_2))$r.squared
+        }
+    
+    }
+    
+    results$VIF <- with(results, - 1/(1-R_sq))
+      
+    results <- results %>% select(-R_sq)
+    return(results)
+  }
+
+
+vif_test <- 
+  VIF_data(
+    DATA = df_2
+    ,
+    RESPONSE = "log_nnal"
+    ,
+    PREDICTORS = c("log_cotinine", "carbon_monoxide", "cpd", "gender")
+    , 
+    SPECIAL = "I(log_cotinine^2)"
+    )
+
+vif_test
+
+vif_test2 <- 
+  VIF_data(
+    DATA = df_2
+    ,
+    RESPONSE = "log_nnal"
+    ,
+    PREDICTORS = c("log_cotinine", "carbon_monoxide", "cpd", "gender")
+    )
+
+vif_test2
+
+```
+  
+# Summary of Diagnostrics and Final Model For Inference 
+
+filter out outliers, other shit and fit the final model 
+
+```{r}
+final <- lm(formula = log_nnal ~ gender + cpd + carbon_monoxide + 
+    log_cotinine + I(log_cotinine^2), data = df_2)
+```
+
+# Inference
+
+## Coefficient Inference 
+
+```{r}
+res_reg <- data.frame(summary(final)$coefficients)
+res_reg$var <- rownames(res_reg)
+rownames(res_reg) <- NULL
+res_reg <- res_reg %>% select(var, everything())
+res_reg <-
+  res_reg %>% mutate_at(vars(Estimate, `Std..Error`, t.value, `Pr...t..`),
+                                 funs(round(., 6)
+                                      )
+                                 )
+
+colnames(res_reg) <- c("Predictor", "Estiamte", "Standard Error", "Z Value", "P value")
+
+res_reg$`Significant` <- ifelse(res_reg$`P value` < 0.05, "*", "")
+
+res_reg %>%
+  kbl(booktabs = T, align = c('l','c', 'c', 'c', 'c'),
+      linesep = "\\addlinespace", ) %>%
+  kable_styling(latex_options = c("striped", "HOLD_position")) %>% 
+    column_spec(length(res_reg), width = "1.75cm")
+```
+
+## Effect Plots 
+
+```{r}
+
+my_pred <- ggpredict(final, terms = c("log_cotinine"))
+
+plot(my_pred) + 
+  ggtitle("Effects of log_cotinine on log_nnal")
+
+
+ggplot(data = df_2, 
+       aes(x = log_cotinine, 
+           y = log_nnal)) + 
+  geom_point() + 
+  geom_smooth(se = F, aes(color = "LOESS Smooth")) + 
+  geom_smooth(data = my_pred, aes(x = x, y = predicted, color = "Fitted Effect"), se = T ) + 
+  theme_minimal() + 
+  labs(colour = "Line Type") + 
+
+  theme(plot.title = element_text(size = 12)) + 
+  
+  xlab("Cotinine") + 
+  ylab("NNAL")
+
+
+
+```
+
+```{r}
+
+my_pred2 <- ggpredict(final, terms = c("log_cotinine", "gender"))
+
+plot(my_pred2) + 
+  ggtitle("Effects of log_cotinine on log_nnal")
+
+colnames(my_pred2)[length(my_pred2)] <- "gender"
+  
+df_2$gender <- as.factor(df_2$gender)
+
+ggplot(data = df_2, 
+       aes(x = log_cotinine, 
+           y = log_nnal, 
+           group = gender, 
+           color = gender)) + 
+  geom_point() + 
+  stat_smooth(data = my_pred2, aes(x = x, y = predicted, color = gender)) + 
+  theme_minimal() + 
+
+  theme(plot.title = element_text(size = 12)) + 
+  
+  xlab("Cotinine") + 
+  ylab("NNAL")
+
+```
+
+## Estimating Effects and Predictions
+
+Now we can link  visual effects and with the fitted effects 
+
+```{r}
+pred_d <- data.frame(my_pred)
+rownames(pred_d) <- NULL
+
+pred_d[(pred_d$x - mean(pred_d$x)) == 
+         min(pred_d$x - mean(pred_d$x)), ]  %>% select(-group)
+
+```
+
+
+
+```{r, eval=F}
+
+emmeans(final,  "log_cotinine")
+
+```
+
+
+```{r, eval=F}
+
+emmeans(final,  #specify model 
+        "log_cotinine", 
+        at = list(log_cotinine = 3.465736)
+                  )
+
+```
+
+```{r, eval=F}
+
+emmeans(final,  #specify model 
+        "gender", 
+        at = list(log_cotinine = 3.465736)
+                  )
+
+```
+
+```{r, eval=F}
+
+emmeans(final,  #specify model 
+        c("gender"),  
+        at = list(log_cotinine = 8.236, 
+                  cpd = 20, 
+                  carbon_monoxide = 25 )
+                  )
+        
+
+```
+
+# More on Predictions: Deeper dive into the estimates
+
+## Average Response Level C.I. 
+
+Page 58
+
+```{r, eval=F}
+
+predict(final, 
+        newdata = data.frame
+          (gender = "1", 
+             cpd = 20, 
+             carbon_monoxide = 15, 
+             log_cotinine = 10), 
+        interval = "confidence"
+        )
+```
+
+## Single Observation  C.I.
+
+```{r, eval=F}
+
+predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10), 
+        interval = "prediction"
+        )
+
+```
+
+## N Observations C.I.
+
+```{r, eval=F}
+
+mse <- sum((final$fitted.values - df_2$log_nnal)^2) / (nrow(df_2) - 1)
+
+N <- 100
+
+se <- (predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10), 
+        interval = "confidence"
+        )[1] - 
+         
+       predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10), 
+        interval = "confidence"
+        )[2]) / 
+      qt(.95, (nrow(df_2) - 2) )
+
+se_5 <- se + mse / N
+
+pred_5_u <- predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10)) + 
+          qt(.95, (nrow(df_2) - 2)) * se_5
+
+pred_5_l <- predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10)) - 
+          qt(.95, (nrow(df_2) - 2)) * se_5
+
+print(paste(
+  pred_5_l, 
+  predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10)), 
+  pred_5_u
+))
+
+
+```
+
+```{r, eval=F}
+
+ressy <- 
+  data.frame(N = seq(1,100,1), 
+             lb = NA)
+
+for(i in 1:100){
+  se_5 <- se + mse / i
+  
+  ressy$lb[i] <- 
+    predict(final, 
+        newdata = data.frame
+          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10)) - 
+          qt(.95, (nrow(df_2) - 2)) * se_5
+}
+
+ggplot(data = ressy, 
+       aes(x = N, 
+           y = lb)) + 
+  geom_line(aes(color = "Prediction For N Confidnece Interval")) + 
+  geom_hline(aes(
+                yintercept = 
+               predict(final, 
+                        newdata = data.frame
+                          (gender = "1", cpd = 20, carbon_monoxide = 15, log_cotinine = 10), 
+                        interval = "confidence"
+                        )[2], color = "Response Level Confidence Interval")) + 
+  theme_minimal()
+
+```
+
+# Summary 
+
+# Appendix - Code
